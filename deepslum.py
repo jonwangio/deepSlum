@@ -62,37 +62,38 @@ import tensorflow as tf
 
 # load rasters: base image along with its label
 # Stack base image and label into a list of array
-def load_rasters(path, subUL, extent):  # Subset from original raster with extent and upperleft coord
+def load_rasters(path, subUL, extent, band_ind):  # Subset from original raster with extent and upperleft coord
     """Load training data pairs (two high resolution images and two low resolution images)"""
     path_list = []  # List image name and path
     for path in Path(path).glob('*.tif'):
         path_list.append(path)
     assert len(path_list) == 2
 
-#    for path in path_list:  # Organize path list
-#        img_name = path.name
-#        if 'base' in img_name:
-#            base = path
-#        elif 'label' in img_name:
-#            label = path
-#    path_list = [base, label]
+    # Ensure the order of the list: base image first !!
+    for path in path_list:  # Organize path list
+        img_name = path.name
+        if 'base' in img_name:
+            base = path
+        elif 'label' in img_name:
+            label = path
+    path_list = [base, label]
     
     stack = []  # Stack base and label together into a 3D array
     for path in path_list:
         if path.name.startswith('base'):
             data = gdal_array.LoadFile(str(path), xoff=subUL[0], yoff=subUL[1], 
                                        xsize=extent, ysize=extent) #.astype(np.int)
-            for band in range(data.size[2]):
-                stack.append(band)
+            for band in band_ind:
+                stack.append(data[band])
         else:
             data = gdal_array.LoadFile(str(path), xoff=subUL[0], yoff=subUL[1], 
                                        xsize=extent, ysize=extent) #.astype(np.int)
+            stack.append(data)
 #        image = Image.fromarray(data)
 #        data = nan_remover(data)
 #        setattr(image, 'filename', path)
-        stack.append(data)
     # Ensure the size of base and label is are consistent
-    assert stack[0].size == stack[-1].size
+    assert stack[0][-1].shape == stack[1].shape
     return stack[:-1], stack[-1]
 
 
@@ -153,25 +154,26 @@ def stack_to_patches(stack, size, stride, patches):
 
 
 # Arrange training and validation sets from the patches
-def load_train_set(data_dir, subUL, extent, size, stride=2):
+def load_train_set(data_dir, subUL, extent, band_ind, size, stride):
     # Load image data from training folder
-    patches = [[] for _ in range(4)]  # Empty list to store patches for each layer/band in stack
-    for path in (data_dir/'Train').glob('*'):  # Loop over all folders
+    layers = len(band_ind)+1
+    patches = [[] for _ in range(layers)]  # Empty list to store patches for each layer/band in stack
+    for path in (data_dir/'train').glob('*'):  # Loop over all folders
         if path.is_dir():
             print('loading image pairs from {}'.format(path))
-            stack = load_rasters(path, subUL, extent)
+            stack = load_rasters(path, subUL, extent, band_ind)
             stack = [*stack[0], stack[1]]
             # subset samples into patches
             stack_to_patches(stack, size, stride, patches)
             
     # Split patches into training and validation sets        
-    patch_train = [[] for _ in range(4)]
-    patch_val = [[] for _ in range(4)]
-    for i in range(4):
+    patch_train = [[] for _ in range(layers)]
+    patch_val = [[] for _ in range(layers)]
+    for i in range(layers):
         patch_train[i] = np.stack(patches[i][:int(len(patches[i])*0.7)])
         patch_val[i] = np.stack(patches[i][int(len(patches[i])*0.7):])
     # Return 4-dimensional array (number, height, width, channel)
-    return patch_train[:3], patch_train[-1], patch_val[:3], patch_val[-1]
+    return patch_train[:-1], patch_train[-1], patch_val[:-1], patch_val[-1]
 
 
 # Arrange test set by using another set of raster input
@@ -538,16 +540,18 @@ def main():
         param = json.load(read_file)
 
     repo_dir = Path('__file__').parents[0]
-    data_dir = repo_dir / 'TrainingData'
+    data_dir = repo_dir / 'sample_data'
     
     # Input training patch dimensions
-    img_rows, img_cols = 32, 32
-    # The images are 3-channel (RGB).
-    img_channels = 3
-    
+    size = 32  # img_rows, img_cols = 32, 32
+    # Index of selected band
+    band_ind = [7,5,3,2]  
+    # The images are n-channel.
+    img_channels = len(band_ind)
     # Subset study area
-    subUL = [, ]
-    extent = 
+    subUL = [0, 0]
+    extent = 1000
+    band_ind = [7,5,3,2]  # Index of selected band
         
 #    input_suffix = 'input'
 #    pred_suffix = 'pred'
@@ -593,7 +597,3 @@ def main():
 ##############################################
 if __name__ == '__main__':
     main()
-# Define input image dimensions
-img_rows, img_cols = 32, 32
-# The images are RGB.
-img_channels = 3
