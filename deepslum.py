@@ -47,6 +47,7 @@ from gdal import Open, GA_Update
 from osgeo import gdal_array
 from pathlib import Path
 from PIL import Image
+from functools import partial
 import sklearn.feature_extraction.image as im
 import cv2
 import matplotlib.pyplot as plt
@@ -64,36 +65,36 @@ import tensorflow as tf
 # Stack base image and label into a list of array
 def load_rasters(path, subUL, extent, band_ind):  # Subset from original raster with extent and upperleft coord
     """Load training data pairs (two high resolution images and two low resolution images)"""
-    path_list = []  # List image name and path
-    for path in Path(path).glob('*.tif'):
-        path_list.append(path)
-    assert len(path_list) == 2
+    file_list = []  # List image name
+    for file in Path(path).glob('*.tif'):
+        file_list.append(file)
+    assert len(file_list) == 2
 
     # Ensure the order of the list: base image first !!
-    for path in path_list:  # Organize path list
-        img_name = path.name
+    for file in file_list:  # Organize file list
+        img_name = file.name
         if 'base' in img_name:
-            base = path
+            base = file
         elif 'label' in img_name:
-            label = path
-    path_list = [base, label]
+            label = file
+    file_list = [base, label]
     
     stack = []  # Stack base and label together into a 3D array
-    for path in path_list:
-        if path.name.startswith('base'):
-            data = gdal_array.LoadFile(str(path), xoff=subUL[0], yoff=subUL[1], 
+    for file in file_list:
+        if file.name.startswith('base'):
+            data = gdal_array.LoadFile(str(file), xoff=subUL[0], yoff=subUL[1], 
                                        xsize=extent, ysize=extent) #.astype(np.int)
             for band in band_ind:
                 stack.append(data[band])
         else:
-            data = gdal_array.LoadFile(str(path), xoff=subUL[0], yoff=subUL[1], 
+            data = gdal_array.LoadFile(str(file), xoff=subUL[0], yoff=subUL[1], 
                                        xsize=extent, ysize=extent) #.astype(np.int)
             stack.append(data)
 #        image = Image.fromarray(data)
 #        data = nan_remover(data)
-#        setattr(image, 'filename', path)
+#        setattr(image, 'filename', file)
     # Ensure the size of base and label is are consistent
-    assert stack[0][-1].shape == stack[1].shape
+    assert stack[0].shape == stack[-1].shape
     return stack[:-1], stack[-1]
 
 
@@ -158,10 +159,10 @@ def load_train_set(data_dir, subUL, extent, band_ind, size, stride):
     # Load image data from training folder
     layers = len(band_ind)+1
     patches = [[] for _ in range(layers)]  # Empty list to store patches for each layer/band in stack
-    for path in (data_dir/'train').glob('*'):  # Loop over all folders
-        if path.is_dir():
-            print('loading image pairs from {}'.format(path))
-            stack = load_rasters(path, subUL, extent, band_ind)
+    for train_path in (data_dir/'train').glob('*'):  # Loop over all folders
+        if train_path.is_dir():
+            print('loading image pairs from {}'.format(train_path))
+            stack = load_rasters(train_path, subUL, extent, band_ind)
             stack = [*stack[0], stack[1]]
             # subset samples into patches
             stack_to_patches(stack, size, stride, patches)
@@ -177,16 +178,15 @@ def load_train_set(data_dir, subUL, extent, band_ind, size, stride):
 
 
 # Arrange test set by using another set of raster input
-def load_test_set(stack, block_size=(10, 10)):
-    assert len(stack) == 2
-
-    patches = [[] for _ in range(4)]
-    stack = [*stack[0], stack[1]]
-    stack_to_patches(stack, size=tuple(block_size), patches)
+def load_test_set(stack, block_size):
+    assert len(stack) == 2    
+    stack = [*stack[0], stack[1]]  # Update stack by split tuple into list
+    patches = [[] for _ in range(len(stack))]  # Stack length already changed
+    stack_to_patches(stack, size=block_size, stride=None, patches=patches)
 
     for i in range(4):
         patches[i] = np.stack(patches[i])
-    return patches[:3], patches[-1]
+    return patches[:-1], patches[-1]
 
 
 ##############################################
@@ -406,7 +406,7 @@ class Experiment(object):
     def train(self, data_dir, epochs, resume=True):
         # Load and process data
         x_train, y_train, x_val, y_val = self.load_set(data_dir)
-        assert len(x_train) == 3 and len(x_val) == 3
+        assert len(x_train) == len(band_ind) and len(x_val) == len(band_ind)
         for i in range(3):
             x_train[i], x_val[i] = [self.validate(x) for x in [x_train[i], x_val[i]]]
         y_train, y_val = [self.validate(y) for y in [y_train, y_val]]
@@ -454,31 +454,11 @@ class Experiment(object):
             plt.savefig('.'.join([prefix, metric.lower(), 'eps']))
             plt.close()
 
-    def test(self, data_dir, test_set='Test', block_size=(10, 10), metrics=[mean_iou]):
-        print('Testing...')
-        output_dir = self.test_dir / test_set
-        output_dir.mkdir(exist_ok=True)
-
-        # Evaluate metrics on each image
-        rows = []
-        for image_path in (data_dir / test_set).glob('*'):
-            if image_path.is_dir():
-                rows += [self.test_on_image(image_path, output_dir, block_size=block_size, metrics=metrics)]
-        df = pd.DataFrame(rows)
-        # Compute average metrics
-        row = pd.Series()
-        row['name'] = 'average'
-        for col in df:
-            if col != 'name':
-                row[col] = df[col].mean()
-        df = df.append(row, ignore_index=True)
-        df.to_csv(str(self.test_dir / '{}/metrics.csv'.format(test_set)))
-
-    def test_on_image(self, image_dir, output_dir, block_size=(10, 10), metrics=[mean_iou]):
+    def test_on_image(self, image_dir, output_dir, block_size, band_ind, metrics=[mean_iou]):
         # Load images
-        print('Loading image pairs from {}'.format(image_dir))
-        input_images, valid_image = load_rasters(image_dir, subUL, extent)
-        assert len(input_images) == 3
+        print('Loading test image from {}'.format(image_dir))
+        input_images, valid_image = load_rasters(image_dir, subUL, extent, band_ind)
+        assert len(input_images) == len(band_ind)
         name = input_images[-1].filename.name if hasattr(input_images[-1], 'filename') else ''
         print('Predict on image {}'.format(name))
 
@@ -487,8 +467,7 @@ class Experiment(object):
         x_inputs = [self.validate(img_to_array(im)) for im in input_images]
         assert x_inputs[0].shape[1] % block_size[0] == 0
         assert x_inputs[0].shape[2] % block_size[1] == 0
-        x_train, _ = load_test_set((input_images, valid_image),
-                                   block_size=block_size, scale=self.scale)
+        x_train, _ = load_test_set((input_images, valid_image), block_size=block_size)
 
         model = self.compile(self.build_model(*x_train))
         if self.model_file.exists():
@@ -524,7 +503,31 @@ class Experiment(object):
                              str(output_dir / name),
                              prototype=prototype)
         return row
+    
+    def test(self, data_dir, block_size=(500, 500), metrics=[mean_iou]):
+        test_set='test'
+        print('Testing...')
+        output_dir = self.test_dir/test_set
+        output_dir.mkdir(exist_ok=True)
 
+        # Evaluate metrics on each image
+        # Different from training that load all images at once before training
+        # test_on_image is put in the loop called for each image
+        rows = []
+        for image_path in (data_dir/test_set).glob('*'):
+            if image_path.is_dir():
+                rows += [self.test_on_image(image_path, output_dir, 
+                                            block_size=block_size, band_ind, metrics=metrics)]
+        df = pd.DataFrame(rows)
+        # Compute average metrics
+        row = pd.Series()
+        row['name'] = 'average'
+        for col in df:
+            if col != 'name':
+                row[col] = df[col].mean()
+        df = df.append(row, ignore_index=True)
+        df.to_csv(str(self.test_dir / '{}/metrics.csv'.format(test_set)))
+        
 
 ##############################################
 # Main
@@ -536,14 +539,15 @@ def main():
 #    parser.add_argument('config', type=Path)
 #    args = parser.parse_args()
 #    param = json.load(args.config.open())
-    with open('dcfnex-tir.json', 'r') as read_file:
-        param = json.load(read_file)
+#    with open('dcfnex-tir.json', 'r') as read_file:
+#        param = json.load(read_file)
 
     repo_dir = Path('__file__').parents[0]
     data_dir = repo_dir / 'sample_data'
     
     # Input training patch dimensions
     size = 32  # img_rows, img_cols = 32, 32
+    stride = 128  # Sampling stride
     # Index of selected band
     band_ind = [7,5,3,2]  
     # The images are n-channel.
@@ -560,7 +564,7 @@ def main():
 #    modis_prefix = 'MOD11A1'
 #    landsat_prefix = 'LC08'
     
-    # Model
+    # Args
     build_model = partial(get_model(param['model']['name']),
                           **param['model']['params'])
     if 'optimizer' in param:
@@ -572,13 +576,11 @@ def main():
     lr_block_size = tuple(param['lr_block_size'])
     
     load_train_set = partial(load_train_set,
-                             lr_sub_size=param['lr_sub_size'],
-                             lr_sub_stride=param['lr_sub_stride'],
-                             ls_subUL=ls_subUL, coarse_resol=coarse_resol,
-                             fine_resol=fine_resol, mod_subUL=mod_subUL, extent=extent)
+                             subUL=subUL, extent=extent, band_ind=band_ind, 
+                             size=size, stride=stride)
         
     # Training
-    expt = Experiment(scale=param['scale'], load_set=load_train_set,
+    expt = Experiment(load_set=load_train_set,
                       build_model=build_model, optimizer=optimizer,
                       save_dir=param['save_dir'])
     print('training process...')
@@ -586,8 +588,7 @@ def main():
     
     # Evaluation
     print('evaluation process...')
-    test_set = 'Test'
-    expt.test(data_dir, test_set=test_set, lr_block_size=[64, 64])  # lr_block_size=lr_block_size
+    expt.test(data_dir, lr_block_size=[64, 64])  # lr_block_size=lr_block_size
 #    for test_set in param['test_sets']:
 #        expt.test(test_set=test_set, lr_block_size=lr_block_size)
 

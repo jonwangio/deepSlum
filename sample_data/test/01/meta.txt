@@ -1,0 +1,5 @@
+Base:
+File from "17FEBR1C2", WorldView-2 image, 2m resolution, 8 bands.
+
+Label:
+File from "17R1C2GrJon", self created artificial boundary rasterized, 2m resolution.
