@@ -1,0 +1,23 @@
+{
+  "save_dir": "results",
+  "model": {
+    "name": "u_net"
+  },
+  "subUL": [0, 0],
+  "extent": 1000,
+  "band_ind": [7, 5, 3, 2],
+  "train_set": "train",
+  "val_set": "valid",
+  "test_sets": [ "tir_valid"],
+  "size": 32,
+  "stride": 64,
+  "block_size": [500, 500],
+  "epochs": 100,
+  "optimizer": {
+    "name": "adam",
+    "params": {
+      "lr": 1e-3,
+      "decay": 1e-5
+    }
+  }
+}

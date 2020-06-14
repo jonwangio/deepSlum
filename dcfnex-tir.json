@@ -1,0 +1,22 @@
+{
+  "save_dir": "dcstfn-tir",
+  "model": {
+    "name": "STRSRN",
+    "params": {"r": [2, 4, 8, 16]}
+  },
+  "scale": 8,
+  "train_set": "tir_train",
+  "val_set": "tir_valid",
+  "test_sets": [ "tir_valid"],
+  "lr_sub_size": 32,
+  "lr_sub_stride": 32,
+  "lr_block_size": [64, 64],
+  "epochs": 80,
+  "optimizer": {
+    "name": "adam",
+    "params": {
+      "lr": 1e-3,
+      "decay": 1e-5
+    }
+  }
+}

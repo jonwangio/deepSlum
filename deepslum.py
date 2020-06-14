@@ -20,8 +20,9 @@
 
 from keras import backend as K
 from keras.models import Model, model_from_json
+from keras import optimizers
 from keras.optimizers import Adam
-from keras.callbacks import ReduceLROnPlateau, CSVLogger, EarlyStopping
+from keras.callbacks import TensorBoard, ModelCheckpoint, ReduceLROnPlateau, CSVLogger, EarlyStopping
 from keras.layers import (
     Conv2D,
     UpSampling2D,
@@ -33,7 +34,6 @@ from keras.layers import (
     Activation,
     concatenate
 )
-from keras.callbacks import TensorBoard 
 from keras.layers.core import RepeatVector, Reshape
 from keras.preprocessing.image import ImageDataGenerator, img_to_array, load_img
 from skimage.io import imread, imsave
@@ -48,6 +48,9 @@ from osgeo import gdal_array
 from pathlib import Path
 from PIL import Image
 from functools import partial
+import pandas as pd
+import argparse
+import json
 import sklearn.feature_extraction.image as im
 import cv2
 import matplotlib.pyplot as plt
@@ -403,7 +406,7 @@ class Experiment(object):
         model.compile(optimizer=self.optimizer, loss='binary_crossentropy', metrics=[mean_iou])
         return model
 
-    def train(self, data_dir, epochs, resume=True):
+    def train(self, data_dir, epochs, band_ind, resume=True):
         # Load and process data
         x_train, y_train, x_val, y_val = self.load_set(data_dir)
         assert len(x_train) == len(band_ind) and len(x_val) == len(band_ind)
@@ -516,8 +519,8 @@ class Experiment(object):
         rows = []
         for image_path in (data_dir/test_set).glob('*'):
             if image_path.is_dir():
-                rows += [self.test_on_image(image_path, output_dir, 
-                                            block_size=block_size, band_ind, metrics=metrics)]
+                rows += [self.test_on_image(image_path, output_dir, band_ind, 
+                                            block_size=block_size, metrics=metrics)]
         df = pd.DataFrame(rows)
         # Compute average metrics
         row = pd.Series()
@@ -534,61 +537,73 @@ class Experiment(object):
 ##############################################
 
 def main():
-
-#    parser = argparse.ArgumentParser()
-#    parser.add_argument('config', type=Path)
-#    args = parser.parse_args()
-#    param = json.load(args.config.open())
-#    with open('dcfnex-tir.json', 'r') as read_file:
-#        param = json.load(read_file)
-
     repo_dir = Path('__file__').parents[0]
     data_dir = repo_dir / 'sample_data'
     
-    # Input training patch dimensions
-    size = 32  # img_rows, img_cols = 32, 32
-    stride = 128  # Sampling stride
-    # Index of selected band
-    band_ind = [7,5,3,2]  
-    # The images are n-channel.
-    img_channels = len(band_ind)
-    # Subset study area
-    subUL = [0, 0]
-    extent = 1000
-    band_ind = [7,5,3,2]  # Index of selected band
-        
-#    input_suffix = 'input'
-#    pred_suffix = 'pred'
-#    valid_suffix = 'valid'
-#    
-#    modis_prefix = 'MOD11A1'
-#    landsat_prefix = 'LC08'
+#    # Input training patch dimensions
+#    size = 32  # img_rows, img_cols = 32, 32
+#    stride = 64  # Sampling stride
+#    # Index of selected band
+#    band_ind = [7,5,3,2]  
+#    # Subset study area
+#    subUL = [0, 0]
+#    extent = 1000
+#    band_ind = [7,5,3,2]  # Index of selected band
+
+#    # Specify args
+#    # Training parameters
+#    parser = argparse.ArgumentParser(description='Acquire some parameters for fusion restore')
+#    parser.add_argument('--lr', type=float, default=1e-3, help='the initial learning rate')
+#    parser.add_argument('--batch_size', type=int, default=32, help='input batch size for training')
+#    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
+#    parser.add_argument('--cuda', action='store_true', help='enables cuda')
+#    parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
+#    parser.add_argument('--num_workers', type=int, default=0, help='number of threads to load data')
+#    parser.add_argument('--pretrained', type=Path, help='the path of the pretained encoder')
+#    # Input parameters
+#    parser.add_argument('--refs', type=int, help='the reference data counts for fusion')
+#    parser.add_argument('--image_size', type=int, nargs='+', default=[1000, 1000],
+#                        help='the size of the entire image (width, height)')
+#    parser.add_argument('--patch_size', type=int, nargs='+', default=size,
+#                        help='the image patch size for training restore')
+#    parser.add_argument('--patch_stride', type=int, nargs='+', default=stride,
+#                        help='the patch stride for image division')
+#    parser.add_argument('--test_patch', type=int, nargs='+', default=1000,
+#                        help='the image patch size for test')
+#    parser.add_argument('--config', type=Path)
+#    args = parser.parse_args()
+#    param = vars(args)  # Convert namespace to dictionary    
+#    with open('param.json', 'w') as f:
+#        json.dump(param, f)
     
-    # Args
-    build_model = partial(get_model(param['model']['name']),
-                          **param['model']['params'])
+    # Directly read parameters from JSON file
+    with open('parameter.json', 'r') as read_file:
+        param = json.load(read_file)
+            
+    # Load args
+    build_model = get_model(param['model']['name'])
     if 'optimizer' in param:
         optimizer = getattr(optimizers, param['optimizer']['name'].lower())
         optimizer = optimizer(**param['optimizer']['params'])
     else:
         optimizer = 'adam'
-    
-    lr_block_size = tuple(param['lr_block_size'])
-    
+        
     load_train_set = partial(load_train_set,
-                             subUL=subUL, extent=extent, band_ind=band_ind, 
-                             size=size, stride=stride)
+                             subUL=param['subUL'], extent=param['extent'], 
+                             band_ind=param['band_ind'], 
+                             size=param['size'], stride=param['stride'])
         
     # Training
     expt = Experiment(load_set=load_train_set,
                       build_model=build_model, optimizer=optimizer,
                       save_dir=param['save_dir'])
     print('training process...')
-    expt.train(train_set=data_dir, epochs=param['epochs'], resume=True)
+    expt.train(train_set=data_dir, band_ind=param['band_ind'], 
+               epochs=param['epochs'], resume=True)
     
     # Evaluation
     print('evaluation process...')
-    expt.test(data_dir, lr_block_size=[64, 64])  # lr_block_size=lr_block_size
+    expt.test(data_dir, block_size=tuple(param['block_size'])  # lr_block_size=lr_block_size
 #    for test_set in param['test_sets']:
 #        expt.test(test_set=test_set, lr_block_size=lr_block_size)
 
