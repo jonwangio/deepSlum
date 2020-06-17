@@ -19,7 +19,7 @@
 
 
 from keras import backend as K
-from keras.models import Model, model_from_json
+from keras.models import Model, model_from_json, load_model
 from keras import optimizers
 from keras.optimizers import Adam
 from keras.callbacks import TensorBoard, ModelCheckpoint, ReduceLROnPlateau, CSVLogger, EarlyStopping
@@ -36,27 +36,15 @@ from keras.layers import (
 )
 from keras.layers.core import RepeatVector, Reshape
 from keras.preprocessing.image import ImageDataGenerator, img_to_array, load_img
-from skimage.io import imread, imsave
-from skimage.color import rgb2lab, lab2rgb, rgb2gray, gray2rgb
-from skimage.transform import resize
-from skimage import measure
-from skimage.util.shape import view_as_blocks
-from imgaug import augmenters as iaa
 from scipy import interpolate
-from gdal import Open, GA_Update
 from osgeo import gdal_array
 from pathlib import Path
-from PIL import Image
 from functools import partial
 import pandas as pd
-import argparse
 import json
-import sklearn.feature_extraction.image as im
-import cv2
 import matplotlib.pyplot as plt
 import numpy as np
-import sys
-import os
+import time
 import tensorflow as tf
 
 
@@ -66,7 +54,7 @@ import tensorflow as tf
 
 # load rasters: base image along with its label
 # Stack base image and label into a list of array
-def load_rasters(path, subUL, extent, band_ind):  # Subset from original raster with extent and upperleft coord
+def load_rasters(path, subUL, band_ind):  # Subset from original raster with extent and upperleft coord
     """Load training data pairs (two high resolution images and two low resolution images)"""
     file_list = []  # List image name
     for file in Path(path).glob('*.tif'):
@@ -85,19 +73,20 @@ def load_rasters(path, subUL, extent, band_ind):  # Subset from original raster 
     stack = []  # Stack base and label together into a 3D array
     for file in file_list:
         if file.name.startswith('base'):
-            data = gdal_array.LoadFile(str(file), xoff=subUL[0], yoff=subUL[1], 
-                                       xsize=extent, ysize=extent) #.astype(np.int)
-            for band in band_ind:
-                stack.append(data[band])
+            data = gdal_array.LoadFile(str(file), xoff=subUL[0], yoff=subUL[1]) #.astype(np.int),ysize=extent[1],xsize=extent[0]
+            data = data[tuple(band_ind),:,:]  # Worldview image with 3rd dimension at first
+            data = np.transpose(data,(1,2,0))  # Transpose 3rd to last 
+            stack.append(data)
         else:
-            data = gdal_array.LoadFile(str(file), xoff=subUL[0], yoff=subUL[1], 
-                                       xsize=extent, ysize=extent) #.astype(np.int)
+            data = gdal_array.LoadFile(str(file), xoff=subUL[0], yoff=subUL[1]) #.astype(np.int),xsize=extent[0],ysize=extent[1]
+            data = data[:,:,np.newaxis]
             stack.append(data)
 #        image = Image.fromarray(data)
 #        data = nan_remover(data)
 #        setattr(image, 'filename', file)
     # Ensure the size of base and label is are consistent
-    assert stack[0].shape == stack[-1].shape
+    assert stack[0].shape[0] == stack[-1].shape[0]
+    assert stack[0].shape[1] == stack[-1].shape[1]
     return stack[:-1], stack[-1]
 
 
@@ -140,7 +129,7 @@ def gen_patches(image, size, stride):
     # Columns in priority
     for i in range(0, image.shape[0] - size[0] + 1, stride[0]):  # One patch every stride
         for j in range(0, image.shape[1] - size[1] + 1, stride[1]):
-            yield image[i:i + size[0], j:j + size[1], np.newaxis]  # If Pillow Image is used: image.crop([i, j, i + size[0], j + size[1]])
+            yield image[i:i + size[0], j:j + size[1], :]  # If Pillow Image is used: image.crop([i, j, i + size[0], j + size[1]])
 
 
 # Advanced version of patch sampling
@@ -154,26 +143,26 @@ def gen_patches_ctrl():  # With controlled position
 def stack_to_patches(stack, size, stride, patches):
 #    assert len(stack) == 4
     for i in range(len(stack)):  # Loop over the layers/bands in the stack
-        patches[i] += [img for img in gen_patches(stack[i], size, stride)]  # If Pillow Image: img_to_array(img)
+        # If Pillow Image: img_to_array(img)
+        patches[i] += [img.astype('float32') for img in gen_patches(stack[i], size, stride)]
 
 
 # Arrange training and validation sets from the patches
-def load_train_set(data_dir, subUL, extent, band_ind, size, stride):
+def load_train_set(data_dir, subUL, band_ind, size, stride):
     # Load image data from training folder
-    layers = len(band_ind)+1
-    patches = [[] for _ in range(layers)]  # Empty list to store patches for each layer/band in stack
+    patches = [[] for _ in range(2)]  # Empty list to store patches for each layer/band in stack
     for train_path in (data_dir/'train').glob('*'):  # Loop over all folders
         if train_path.is_dir():
             print('loading image pairs from {}'.format(train_path))
-            stack = load_rasters(train_path, subUL, extent, band_ind)
+            stack = load_rasters(train_path, subUL, band_ind)
             stack = [*stack[0], stack[1]]
             # subset samples into patches
             stack_to_patches(stack, size, stride, patches)
             
     # Split patches into training and validation sets        
-    patch_train = [[] for _ in range(layers)]
-    patch_val = [[] for _ in range(layers)]
-    for i in range(layers):
+    patch_train = [[] for _ in range(2)]
+    patch_val = [[] for _ in range(2)]
+    for i in range(2):
         patch_train[i] = np.stack(patches[i][:int(len(patches[i])*0.7)])
         patch_val[i] = np.stack(patches[i][int(len(patches[i])*0.7):])
     # Return 4-dimensional array (number, height, width, channel)
@@ -187,7 +176,7 @@ def load_test_set(stack, block_size):
     patches = [[] for _ in range(len(stack))]  # Stack length already changed
     stack_to_patches(stack, size=block_size, stride=None, patches=patches)
 
-    for i in range(4):
+    for i in range(len(stack)):
         patches[i] = np.stack(patches[i])
     return patches[:-1], patches[-1]
 
@@ -393,7 +382,7 @@ class Experiment(object):
 
     @staticmethod
     def _ensure_channel(array, c):
-        return array[..., c:c + 1]
+        return array[..., c:c + 4]
 
     @staticmethod
     def validate(array):
@@ -409,8 +398,8 @@ class Experiment(object):
     def train(self, data_dir, epochs, band_ind, resume=True):
         # Load and process data
         x_train, y_train, x_val, y_val = self.load_set(data_dir)
-        assert len(x_train) == len(band_ind) and len(x_val) == len(band_ind)
-        for i in range(3):
+        assert len(x_train) == len(x_val)
+        for i in range(1):
             x_train[i], x_val[i] = [self.validate(x) for x in [x_train[i], x_val[i]]]
         y_train, y_val = [self.validate(y) for y in [y_train, y_val]]
 
@@ -433,9 +422,9 @@ class Experiment(object):
         # Set up callbacks
         callbacks = []
         callbacks += [ModelCheckpoint(str(self.model_file))]
-        callbacks += [ModelCheckpoint(str(self.weights_file()),
-                                      save_weights_only=True)]
+#        callbacks += [ModelCheckpoint(str(self.weights_file()), save_weights_only=True)]
         callbacks += [CSVLogger(str(self.history_file), append=resume)]
+        callbacks += [ReduceLROnPlateau(factor=0.5, cooldown=0, patience=30, min_lr=0.5e-5)]
 
         # Train
         model.fit(x_train, y_train, batch_size=16, epochs=epochs, callbacks=callbacks,
@@ -445,7 +434,7 @@ class Experiment(object):
         prefix = str(self.history_file).rsplit('.', maxsplit=1)[0]
         df = pd.read_csv(str(self.history_file))
         epoch = df['epoch']
-        for metric in ['Loss', 'PSNR', 'R2']:
+        for metric in ['Loss', 'mean_iou']:
             train = df[metric.lower()]
             val = df['val_' + metric.lower()]
             plt.figure()
@@ -454,22 +443,28 @@ class Experiment(object):
             plt.legend(loc='best')
             plt.xlabel('Epoch')
             plt.ylabel(metric)
-            plt.savefig('.'.join([prefix, metric.lower(), 'eps']))
+            plt.savefig('.'.join([prefix, metric.lower(), 'png']))
             plt.close()
 
-    def test_on_image(self, image_dir, output_dir, block_size, band_ind, metrics=[mean_iou]):
+    def test_on_image(self, image_dir, output_dir, subUL, band_ind, 
+                      block_size, metrics=[mean_iou]):
         # Load images
         print('Loading test image from {}'.format(image_dir))
-        input_images, valid_image = load_rasters(image_dir, subUL, extent, band_ind)
-        assert len(input_images) == len(band_ind)
+        input_images, valid_image = load_rasters(image_dir, subUL, band_ind)
+        assert input_images[0].shape[-1] == len(band_ind)
         name = input_images[-1].filename.name if hasattr(input_images[-1], 'filename') else ''
         print('Predict on image {}'.format(name))
+        
+        # Pad input image as multiple of block size
+        input_row, input_col = input_images[0].shape[0], input_images[0].shape[1]
+        input_images[0] = np.lib.pad(input_images[0], ((0, block_size[0]-input_row%block_size[0]), 
+                                           (0, block_size[1]-input_col%block_size[1]),(0,0)), 'edge')
 
         # Generate output image and measure run time
         # The shape of the x_inputs (numbers, height, width, channels)
         x_inputs = [self.validate(img_to_array(im)) for im in input_images]
-        assert x_inputs[0].shape[1] % block_size[0] == 0
-        assert x_inputs[0].shape[2] % block_size[1] == 0
+#        assert x_inputs[0].shape[1] % block_size[0] == 0
+#        assert x_inputs[0].shape[2] % block_size[1] == 0
         x_train, _ = load_test_set((input_images, valid_image), block_size=block_size)
 
         model = self.compile(self.build_model(*x_train))
@@ -479,17 +474,19 @@ class Experiment(object):
         t_start = time.perf_counter()
         y_preds = model.predict(x_train, batch_size=1)  # 4-dimensional array with batch size
         # map predicted patches back to original image extent
-        y_pred = np.empty(x_inputs[1].shape[-3:], dtype=np.float32)
+        y_pred = np.empty((input_images[0].shape[0], input_images[0].shape[1], 1), dtype=np.float32)
         row_step = block_size[0]
         col_step = block_size[1]
-        rows = x_inputs[0].shape[2] // block_size[1]
-        cols = x_inputs[0].shape[1] // block_size[0]
+        rows = x_inputs[0].shape[1] // block_size[0]
+        cols = x_inputs[0].shape[2] // block_size[1]
         count = 0
-        for j in range(rows):
-            for i in range(cols):
+        for j in range(cols):
+            for i in range(rows):
                 y_pred[i * row_step: (i + 1) * row_step, j * col_step: (j + 1) * col_step] = y_preds[count]
                 count += 1
         assert count == rows * cols
+        plt.imshow(y_pred[:,:,0],'gray')  # Plot the prediction
+        y_pred = y_pred[:valid_image.shape[0],:valid_image.shape[1]]  # Cut back to unpadded size
         t_end = time.perf_counter()
 
         # Record metrics
@@ -507,7 +504,7 @@ class Experiment(object):
                              prototype=prototype)
         return row
     
-    def test(self, data_dir, block_size=(500, 500), metrics=[mean_iou]):
+    def test(self, data_dir, subUL, band_ind, block_size=(500, 500), metrics=[mean_iou]):
         test_set='test'
         print('Testing...')
         output_dir = self.test_dir/test_set
@@ -519,7 +516,7 @@ class Experiment(object):
         rows = []
         for image_path in (data_dir/test_set).glob('*'):
             if image_path.is_dir():
-                rows += [self.test_on_image(image_path, output_dir, band_ind, 
+                rows += [self.test_on_image(image_path, output_dir, subUL, band_ind, 
                                             block_size=block_size, metrics=metrics)]
         df = pd.DataFrame(rows)
         # Compute average metrics
@@ -540,46 +537,21 @@ def main():
     repo_dir = Path('__file__').parents[0]
     data_dir = repo_dir / 'sample_data'
     
-#    # Input training patch dimensions
-#    size = 32  # img_rows, img_cols = 32, 32
-#    stride = 64  # Sampling stride
-#    # Index of selected band
-#    band_ind = [7,5,3,2]  
-#    # Subset study area
-#    subUL = [0, 0]
-#    extent = 1000
-#    band_ind = [7,5,3,2]  # Index of selected band
-
-#    # Specify args
-#    # Training parameters
-#    parser = argparse.ArgumentParser(description='Acquire some parameters for fusion restore')
-#    parser.add_argument('--lr', type=float, default=1e-3, help='the initial learning rate')
-#    parser.add_argument('--batch_size', type=int, default=32, help='input batch size for training')
-#    parser.add_argument('--epochs', type=int, default=100, help='number of epochs to train')
-#    parser.add_argument('--cuda', action='store_true', help='enables cuda')
-#    parser.add_argument('--ngpu', type=int, default=1, help='number of GPUs to use')
-#    parser.add_argument('--num_workers', type=int, default=0, help='number of threads to load data')
-#    parser.add_argument('--pretrained', type=Path, help='the path of the pretained encoder')
-#    # Input parameters
-#    parser.add_argument('--refs', type=int, help='the reference data counts for fusion')
-#    parser.add_argument('--image_size', type=int, nargs='+', default=[1000, 1000],
-#                        help='the size of the entire image (width, height)')
-#    parser.add_argument('--patch_size', type=int, nargs='+', default=size,
-#                        help='the image patch size for training restore')
-#    parser.add_argument('--patch_stride', type=int, nargs='+', default=stride,
-#                        help='the patch stride for image division')
-#    parser.add_argument('--test_patch', type=int, nargs='+', default=1000,
-#                        help='the image patch size for test')
-#    parser.add_argument('--config', type=Path)
-#    args = parser.parse_args()
-#    param = vars(args)  # Convert namespace to dictionary    
-#    with open('param.json', 'w') as f:
-#        json.dump(param, f)
-    
     # Directly read parameters from JSON file
     with open('parameter.json', 'r') as read_file:
         param = json.load(read_file)
-            
+
+    # Input training patch dimensions
+    size=param['size']  # img_rows, img_cols = 32, 32
+    stride=param['stride']  # Sampling stride
+    # Index of selected band
+    band_ind=param['band_ind']
+    # Subset study area
+    subUL = subUL=param['subUL']
+    block_size=tuple(param['block_size'])
+#    extent = param['extent']
+    epochs=param['epochs']
+                
     # Load args
     build_model = get_model(param['model']['name'])
     if 'optimizer' in param:
@@ -588,22 +560,18 @@ def main():
     else:
         optimizer = 'adam'
         
-    load_train_set = partial(load_train_set,
-                             subUL=param['subUL'], extent=param['extent'], 
-                             band_ind=param['band_ind'], 
-                             size=param['size'], stride=param['stride'])
+    load_set = partial(load_train_set, subUL, band_ind, size, stride)
         
     # Training
-    expt = Experiment(load_set=load_train_set,
+    expt = Experiment(load_set=load_set,
                       build_model=build_model, optimizer=optimizer,
                       save_dir=param['save_dir'])
     print('training process...')
-    expt.train(train_set=data_dir, band_ind=param['band_ind'], 
-               epochs=param['epochs'], resume=True)
+    expt.train(data_dir, band_ind, epochs, resume=False)
     
     # Evaluation
     print('evaluation process...')
-    expt.test(data_dir, block_size=tuple(param['block_size'])  # lr_block_size=lr_block_size
+    expt.test(data_dir, subUL, band_ind, block_size)  # lr_block_size=lr_block_size
 #    for test_set in param['test_sets']:
 #        expt.test(test_set=test_set, lr_block_size=lr_block_size)
 

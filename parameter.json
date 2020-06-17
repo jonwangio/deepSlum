@@ -4,19 +4,19 @@
     "name": "u_net"
   },
   "subUL": [0, 0],
-  "extent": 1000,
+  "extent": [251, 291],
   "band_ind": [7, 5, 3, 2],
   "train_set": "train",
   "val_set": "valid",
   "test_sets": [ "tir_valid"],
   "size": 32,
-  "stride": 64,
-  "block_size": [500, 500],
+  "stride": 4,
+  "block_size": [256, 256],
   "epochs": 100,
   "optimizer": {
     "name": "adam",
     "params": {
-      "lr": 1e-3,
+      "lr": 1e-4,
       "decay": 1e-5
     }
   }
