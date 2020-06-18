@@ -40,6 +40,7 @@ from scipy import interpolate
 from osgeo import gdal_array
 from pathlib import Path
 from functools import partial
+from sklearn.metrics import jaccard_score
 import pandas as pd
 import json
 import matplotlib.pyplot as plt
@@ -151,7 +152,7 @@ def stack_to_patches(stack, size, stride, patches):
 def load_train_set(data_dir, subUL, band_ind, size, stride):
     # Load image data from training folder
     patches = [[] for _ in range(2)]  # Empty list to store patches for each layer/band in stack
-    for train_path in (data_dir/'train').glob('*'):  # Loop over all folders
+    for train_path in Path(data_dir/'train').glob('*'):  # Loop over all folders
         if train_path.is_dir():
             print('loading image pairs from {}'.format(train_path))
             stack = load_rasters(train_path, subUL, band_ind)
@@ -397,7 +398,7 @@ class Experiment(object):
 
     def train(self, data_dir, epochs, band_ind, resume=True):
         # Load and process data
-        x_train, y_train, x_val, y_val = self.load_set(data_dir)
+        x_train, y_train, x_val, y_val = self.load_set()
         assert len(x_train) == len(x_val)
         for i in range(1):
             x_train[i], x_val[i] = [self.validate(x) for x in [x_train[i], x_val[i]]]
@@ -447,7 +448,7 @@ class Experiment(object):
             plt.close()
 
     def test_on_image(self, image_dir, output_dir, subUL, band_ind, 
-                      block_size, metrics=[mean_iou]):
+                      block_size, metrics=[jaccard_score]):
         # Load images
         print('Loading test image from {}'.format(image_dir))
         input_images, valid_image = load_rasters(image_dir, subUL, band_ind)
@@ -480,13 +481,20 @@ class Experiment(object):
         rows = x_inputs[0].shape[1] // block_size[0]
         cols = x_inputs[0].shape[2] // block_size[1]
         count = 0
-        for j in range(cols):
-            for i in range(rows):
+        for i in range(cols):
+            for j in range(rows):
                 y_pred[i * row_step: (i + 1) * row_step, j * col_step: (j + 1) * col_step] = y_preds[count]
                 count += 1
         assert count == rows * cols
-        plt.imshow(y_pred[:,:,0],'gray')  # Plot the prediction
         y_pred = y_pred[:valid_image.shape[0],:valid_image.shape[1]]  # Cut back to unpadded size
+        
+        # Plot prediction and reference
+        f, (ax1, ax2) = plt.subplots(1, 2, sharey=True, figsize=(12,5))
+        ax1.imshow(y_pred[:,:,0],'gray')
+        ax1.set_title('Prediction')
+        ax2.imshow(valid_image[:,:,0],'gray')
+        ax2.set_title('Reference')
+
         t_end = time.perf_counter()
 
         # Record metrics
@@ -496,7 +504,9 @@ class Experiment(object):
         y_true = self.validate(img_to_array(valid_image))
         y_pred = self.validate(y_pred)
         for metric in metrics:
-            row[metric.__name__] = K.eval(metric(y_true, y_pred))
+#            row[metric.__name__] = K.eval(metric(y_true, y_pred))
+            row[metric.__name__] = metric(y_true[0].squeeze(), 
+               (y_pred[0].squeeze()>.5).astype(int), average='macro')
 
         prototype = str(valid_image.filename) if hasattr(valid_image, 'filename') else None
         gdal_array.SaveArray(y_pred[0].squeeze().astype(np.int16),
@@ -504,7 +514,7 @@ class Experiment(object):
                              prototype=prototype)
         return row
     
-    def test(self, data_dir, subUL, band_ind, block_size=(500, 500), metrics=[mean_iou]):
+    def test(self, data_dir, subUL, band_ind, block_size=(500, 500), metrics=[jaccard_score]):
         test_set='test'
         print('Testing...')
         output_dir = self.test_dir/test_set
@@ -514,7 +524,7 @@ class Experiment(object):
         # Different from training that load all images at once before training
         # test_on_image is put in the loop called for each image
         rows = []
-        for image_path in (data_dir/test_set).glob('*'):
+        for image_path in Path(data_dir/test_set).glob('*'):
             if image_path.is_dir():
                 rows += [self.test_on_image(image_path, output_dir, subUL, band_ind, 
                                             block_size=block_size, metrics=metrics)]
@@ -535,7 +545,7 @@ class Experiment(object):
 
 def main():
     repo_dir = Path('__file__').parents[0]
-    data_dir = repo_dir / 'sample_data'
+    data_dir = Path(repo_dir / 'sample_data')
     
     # Directly read parameters from JSON file
     with open('parameter.json', 'r') as read_file:
@@ -559,19 +569,23 @@ def main():
         optimizer = optimizer(**param['optimizer']['params'])
     else:
         optimizer = 'adam'
-        
-    load_set = partial(load_train_set, subUL, band_ind, size, stride)
+    
+    # Simple version of data loading functionality
+    load_set = partial(load_train_set, data_dir, 
+                       subUL, band_ind, size, stride)
         
     # Training
     expt = Experiment(load_set=load_set,
                       build_model=build_model, optimizer=optimizer,
                       save_dir=param['save_dir'])
     print('training process...')
-    expt.train(data_dir, band_ind, epochs, resume=False)
+    expt.train(data_dir=data_dir, band_ind=band_ind, 
+               epochs=epochs, resume=False)
     
     # Evaluation
     print('evaluation process...')
-    expt.test(data_dir, subUL, band_ind, block_size)  # lr_block_size=lr_block_size
+    expt.test(data_dir=data_dir, subUL=subUL, 
+              band_ind=band_ind, block_size=block_size)  # lr_block_size=lr_block_size
 #    for test_set in param['test_sets']:
 #        expt.test(test_set=test_set, lr_block_size=lr_block_size)
 
