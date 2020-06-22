@@ -40,7 +40,7 @@ from scipy import interpolate
 from osgeo import gdal_array
 from pathlib import Path
 from functools import partial
-from sklearn.metrics import jaccard_score
+from sklearn.metrics import jaccard_similarity_score as jaccard
 import pandas as pd
 import json
 import matplotlib.pyplot as plt
@@ -448,7 +448,7 @@ class Experiment(object):
             plt.close()
 
     def test_on_image(self, image_dir, output_dir, subUL, band_ind, 
-                      block_size, metrics=[jaccard_score]):
+                      block_size, metrics=[jaccard]):
         # Load images
         print('Loading test image from {}'.format(image_dir))
         input_images, valid_image = load_rasters(image_dir, subUL, band_ind)
@@ -514,7 +514,7 @@ class Experiment(object):
                              prototype=prototype)
         return row
     
-    def test(self, data_dir, subUL, band_ind, block_size=(500, 500), metrics=[jaccard_score]):
+    def test(self, data_dir, subUL, band_ind, block_size=(500, 500), metrics=[jaccard]):
         test_set='test'
         print('Testing...')
         output_dir = self.test_dir/test_set
