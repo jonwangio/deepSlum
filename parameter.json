@@ -5,14 +5,14 @@
   },
   "subUL": [0, 0],
   "extent": [251, 291],
-  "band_ind": [7, 5, 3, 2],
+  "band_ind": [5, 3, 2],
   "train_set": "train",
   "val_set": "valid",
   "test_sets": [ "tir_valid"],
-  "size": 32,
+  "size": 64,
   "stride": 4,
   "block_size": [256, 256],
-  "epochs": 100,
+  "epochs": 20,
   "optimizer": {
     "name": "Adam",
     "params": {
