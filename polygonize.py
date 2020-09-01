@@ -237,7 +237,7 @@ def find_squares(im):
 
     squares = []
     for gray in cv2.split(im):
-        for thrs in range(20, 255, 2):
+        for thrs in range(90, 100, 5):
             print('Threshold at:', thrs)
             if thrs == 0:
                 bina = cv2.Canny(gray, 0, 50, apertureSize=5)
@@ -321,7 +321,7 @@ lines = extractLines(edges)
 h = HoughBundler()
 merged_lines = h.process_lines(lines, im)
 
-t1, t2 = 50, 60
+t1, t2 = 90, 100
 cnts = extractCnt(im, t1, t2)
 
 poly = polyDouglas(cnts, im)
