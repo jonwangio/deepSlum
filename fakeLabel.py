@@ -47,3 +47,44 @@ out_band = out.GetRasterBand(1)
 
 #And write our processed data
 out_band.WriteArray(out_data)
+
+
+##############################################
+# Patch to boundary
+##############################################
+
+from pathlib import Path
+import cv2
+import numpy as np
+import matplotlib.pyplot as plt
+
+def extractEdges(im):
+    # Otsu's method
+    high_thresh, thresh_im = cv2.threshold(im, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    low_thresh = 0.5*high_thresh
+    edges = cv2.Canny(im,low_thresh,high_thresh,apertureSize=3)  # Canny only accepts int
+    print(edges.shape)
+    plt.imshow(edges,'gray')
+    return edges
+
+def grow(im):
+    # Taking a matrix of size 5 as the kernel 
+    kernel = np.ones((3,3), np.uint8)
+    im_dilation = cv2.dilate(im, kernel, iterations=1)
+    plt.imshow(im_dilation,'gray')
+    return im_dilation
+
+
+path = Path('./label/')
+for file in Path(path).glob('*.tif'):
+    im = cv2.imread(str(file),0)
+    im_edge = extractEdges(im)
+    im_dilated = grow(im_edge)
+    cv2.imwrite(file.name, im_dilated)
+
+
+
+
+
+
+
