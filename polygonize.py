@@ -230,41 +230,70 @@ def angle_cos(p0, p1, p2):
     d1, d2 = (p0-p1).astype('float'), (p2-p1).astype('float')
     return np.dot(d1, d2) / np.sqrt( np.dot(d1, d1)*np.dot(d2, d2))
 
-def find_squares(im):
+"""
+def find_shapes(im):
 #    im = cv2.GaussianBlur(im, (3,3), 0)
     kernel = np.ones((9,9))
     im = cv2.morphologyEx(im, cv2.MORPH_OPEN, kernel)
 
-    squares = []
-    for gray in cv2.split(im):
-        for thrs in range(90, 100, 5):
-            print('Threshold at:', thrs)
-            if thrs == 0:
-                bina = cv2.Canny(gray, 0, 50, apertureSize=5)
-                bina = cv2.dilate(bina, None)
-            else:
-                _retval, bina = cv2.threshold(gray, thrs, 255, cv2.THRESH_BINARY)
-#            contours, hier = cv2.findContours(bina, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-            contours, hier = cv2.findContours(bina, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
-            for cnt in contours:
-                cnt_len = cv2.arcLength(cnt, True)
-                cnt = cv2.approxPolyDP(cnt, 0.009*cnt_len, True)
-                if 3<len(cnt)<30 and 150<cv2.contourArea(cnt)<30000:  # and cv2.isContourConvex(cnt):
-                    l = len(cnt)
-                    cnt = cnt.reshape(-1, 2)
+    shapes = []
+    for thrs in range(15, 246, 5):
+        print('Threshold at:', thrs)
+        if thrs == 0:
+            bina = cv2.Canny(im, 0, 50, apertureSize=5)
+            bina = cv2.dilate(bina, None)
+        else:
+            _retval, bina = cv2.threshold(im, thrs, thrs+11, cv2.THRESH_BINARY)
+#        contours, hier = cv2.findContours(bina, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        contours, hier = cv2.findContours(bina, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+        for cnt in contours:
+            cnt_len = cv2.arcLength(cnt, True)
+            cnt = cv2.approxPolyDP(cnt, 0.01*cnt_len, True)
+            if 3<len(cnt)<30 and 500<cv2.contourArea(cnt)<30000:  # and cv2.isContourConvex(cnt):
+                l = len(cnt)
+                cnt = cnt.reshape(-1, 2)
 #                    max_cos = np.max([angle_cos( cnt[i], cnt[(i+1)%l], cnt[(i+2)%l] ) for i in range(l)])
 #                    if max_cos < 0.3:
-#                        squares.append(cnt)
-                    num = sum(angle < 0.1 for angle in [angle_cos( cnt[i], cnt[(i+1)%l], cnt[(i+2)%l] ) for i in range(l)])
-                    if num > 3:
-                        squares.append(cnt)
+#                        shapes.append(cnt)
+                num = sum(angle < 0.1 for angle in [angle_cos( cnt[i], cnt[(i+1)%l], cnt[(i+2)%l] ) for i in range(l)])
+                if num > 3:
+                    shapes.append(cnt)
 
     backtorgb = cv2.cvtColor(im,cv2.COLOR_GRAY2RGB)
-    cv2.drawContours(backtorgb, squares, -1, (255, 0, 0), 1)
+    cv2.drawContours(backtorgb, shapes, -1, (255, 0, 0), 1)
     plt.imshow(backtorgb)
 
-    return squares
+    return shapes
+"""
 
+def find_shapes(im):
+    shapes = []
+#    bina = cv2.adaptiveThreshold(imm,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+#                                 cv2.THRESH_BINARY,299,2)
+    bina = cv2.adaptiveThreshold(im,255,cv2.ADAPTIVE_THRESH_MEAN_C,
+                                 cv2.THRESH_BINARY,99,-5)
+    plt.imshow(bina, 'gray')
+    cv2.imshow('Adaptive Binary', bina) 
+    contours, hier = cv2.findContours(bina, cv2.RETR_TREE, cv2.CHAIN_APPROX_NONE)
+    for cnt in contours:
+        cnt_len = cv2.arcLength(cnt, True)
+        cnt = cv2.approxPolyDP(cnt, 0.01*cnt_len, True)
+        if 3<len(cnt)<200 and 50<cv2.contourArea(cnt)<30000:  # and cv2.isContourConvex(cnt):
+            l = len(cnt)
+            cnt = cnt.reshape(-1, 2)
+#                    max_cos = np.max([angle_cos( cnt[i], cnt[(i+1)%l], cnt[(i+2)%l] ) for i in range(l)])
+#                    if max_cos < 0.3:
+#                        shapes.append(cnt)
+            num = sum(angle < 0.1 for angle in [angle_cos( cnt[i], cnt[(i+1)%l], cnt[(i+2)%l] ) for i in range(l)])
+            if num > 3:
+                shapes.append(cnt)
+
+    backtorgb = cv2.cvtColor(bina,cv2.COLOR_GRAY2RGB)
+    cv2.drawContours(backtorgb, shapes, -1, (255, 0, 0), 2)
+    plt.imshow(backtorgb,'gray')
+    cv2.imshow('Shapes', backtorgb)
+
+    return shapes
 
 ##############################################
 # 02 Bounding methods: box, polygons
@@ -306,8 +335,8 @@ def polyDouglas(cnts, im):
 ##############################################
 
 # Loading prediction
-pred = np.load('pred_patch.npy')
-array = pred[0,:,:,0]  # extract 2D array from the prediction
+pred = np.load('pred_na_small.npy')
+array = pred  #[0,:,:,0]  # extract 2D array from the prediction
 im = np.array(array*255, dtype = np.uint8)  # convert to 8bit int
 # Plot input
 plt.imshow(im,'gray')
